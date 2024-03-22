@@ -1,0 +1,499 @@
+
+---
+title: "Project: Analysis of the effect of alcohol consumption and social background on academic performance"
+output: html_notebook
+---
+
+**Names**
+
+  - Boshra ARIGUIB 
+  - Rogério KACIAVA BOMBARDELLI
+  - Juliana CASTELO BRANCO DREYER
+
+
+*Libraries*
+```{r}
+library(corrplot)
+library(reshape2)
+library(ggplot2)
+library(tidyverse)
+library(viridis)
+library(hopkins)
+library(patchwork)
+library(ggeffects)
+library(ROSE)
+library(caret)
+library(e1071)
+library(dplyr)
+library(multcomp)
+library(pROC)
+library(cluster)
+library(randomForest)
+```
+
+# 1. Presentation of the problem
+- Goal: Analyse the effect of alcohol consumption and family background on academic performance
+- Importance: help in the decision process or design of school management systems
+
+# 2. Overview of data
+## Data Acquisition
+```{r}
+students <- read.csv("student-lpor.csv", header = TRUE, sep = ",") 
+```
+
+## Data Analysis
+```{r}
+glimpse(students)
+```
+
+### Barplots for categorical data
+```{r}
+for (col in names(students) ) {
+  plot <- ggplot(students, aes_string(x = col)) +
+          geom_bar(position = position_dodge(), fill = '#be4d25') +
+          theme_classic()
+    print(plot)
+}
+```
+
+### Statistical summaries for numerical data
+```{r}
+summary_data <- summary(students[, sapply(students, is.numeric)])
+summary_data
+```
+
+# 3. Data preparation
+## Check for missing values
+```{r}
+print("Number of missing values for each row :")
+na_total <- lapply(students, function(x) sum(is.na(x)))  
+na_total
+```
+According to the above output, there is not any missing value in the dataset. We can continue next steps.
+
+## Adjust the types of the variables
+```{r}
+students <- mutate_if(students, is.character, as.factor)
+```
+We change all the character types to factor 
+
+## Target variable 
+The mean of the the grades from the first and second semester turned to levels 'bad' and 'good'
+```{r}
+students$G_mean <- (students$G1 + students$G2) / 2
+students$grade <- ifelse(students$G_mean <= 12, "bad", "good")
+students$grade <- factor(students$grade, levels = c('bad', 'good'))
+tab <- table1::table1(~ . | grade, students)
+tab
+```
+
+# 3. Exploratory data analysis
+
+## Correlation Matrix 
+*Full matrix*
+```{r}
+encoded_students <- model.matrix(~ . - 1, students)
+cormat <- round(cor(encoded_students),2)
+melted_cormat <- melt(cormat)
+ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile()
+```
+*Correlated variables of interest*
+```{r}
+substudents = students[c('Medu', 'Fedu', 'address', 'traveltime', 'Pstatus', 'famrel')] 
+substudents <- mutate_if(substudents, is.character, as.factor)
+substudents <- mutate_if(substudents, is.factor, as.integer)
+corrplot(cor(substudents), col = colorRampPalette(c("#be4d25", "#9925be", "#2596be"))(100), tl.col = 'black', insig='blank', type = 'lower')#, addCoef.col ='black', number.cex = 0.6)
+```
+```{r}
+substudents = students[c('studytime', 'freetime', 'goout', 'absences')] 
+substudents <- mutate_if(substudents, is.character, as.factor)
+substudents <- mutate_if(substudents, is.factor, as.integer)
+corrplot(cor(substudents), col = colorRampPalette(c("#be4d25", "#9925be", "#2596be"))(100), tl.col = 'black', insig='blank', type = 'lower')#, addCoef.col ='black', number.cex = 0.6)
+```
+## Distribution of outcome
+
+**ANOVA Analysis**
+```{r}
+anova_result <- aov(G_mean ~ school + sex + age + address + famsize + Pstatus + Medu + Fedu + traveltime + famrel + studytime + freetime + goout + absences + health + Walc + Dalc, data = students)
+print(summary(anova_result))
+```
+```{r}
+cor_result <- cor.test(students$G_mean, students$Dalc)
+
+# Check correlation coefficient and p-value
+cor_result
+
+```
+```{r}
+substudents = students[c('G_mean', 'school', 'sex', 'age', 'address', 'famsize', 'Pstatus', 'Medu', 'Fedu', 'traveltime', 'famrel', 'studytime', 'freetime', 'goout', 'absences', 'health', 'Walc',  'Dalc')] 
+substudents <- mutate_if(substudents, is.character, as.factor)
+substudents <- mutate_if(substudents, is.factor, as.integer)
+corrplot(cor(substudents), col = colorRampPalette(c("#be4d25", "#9925be", "#2596be"))(100), tl.col = 'black', insig='blank', type = 'lower')#, addCoef.col ='black', number.cex = 0.6)
+
+```
+
+**As Barplots**
+```{r}
+# Plot grade levels by absense levels 
+
+for (col in c('sex', 'school', 'address')) {
+plot <- ggplot(students, aes_string(x = col, fill = 'grade')) +
+    geom_bar(position = "dodge") +
+    scale_fill_manual(values = c("#2596be", "#9925be", "#be4d25", "#49be25", "#102444")) +
+    theme_classic()
+print(plot)
+}
+```
+
+**As Boxplots**
+```{r}
+# Define variable names for the plot
+var_names <- list(sex = "Sex", school = "School", famrel = "Family Relation", health = "Health status")
+
+for (col in c('famrel', 'health')) {
+  plot <- ggplot(data = students, 
+           aes_string(x = paste('factor(', col, ')') , y = 'G_mean', group = paste('factor(', col, ')'), fill = paste('factor(', col, ')'))) +
+           labs(y = 'Average Grade', x = var_names[make.names(col)]) +
+           scale_fill_manual(values = c("#2596be", "#9925be", "#be4d25", "#49be25", "#1054a4")) + #102444
+           geom_boxplot(show.legend = FALSE) +
+           ggtitle(glue::glue("Distribution of Grades per {var_names[make.names(col)]}"))
+  print(plot)
+}
+```
+
+**As Lineplots**
+```{r}
+avg_grade_by_dalc_wd <- aggregate( students$G_mean ~ students$Dalc, data = students, mean)
+avg_grade_by_walc_wd <- aggregate( students$G_mean ~ students$Walc, data = students, mean)
+plot(avg_grade_by_dalc_wd, type = 'b', col='#9925be', xlab = "Average alcohol consumption", ylab = "Grade")
+lines(avg_grade_by_walc_wd, type = 'b', col='#2596be')
+legend("topright", legend = c("Weekdays", "Weekends"), col = c("#9925be", "#2596be"), lwd = 2)
+```
+
+
+## 4. Model Learning
+
+### 1. Class balance & Test-Train datasets
+Check distribution of the variable stroke in the data
+```{r}
+round(prop.table(table(students$grade)), 2)
+```
+
+To balance the classes, we oversample the minority class using ROSE 
+```{r}
+set.seed(15)
+students_rose <- ROSE(grade ~ ., data = students)$data
+round(prop.table(table(students_rose$grade)), 2)
+```
+
+### 2. Classification
+Classification Task: 
+- Given: a set of features (all variables in the dataset or a subset)
+- Output: predict is the student gets a good or bad grade
+
+### SVM
+```{r}
+set.seed(15)
+students_svm = students_rose[c('Walc', 'Dalc', 'grade')]
+index <- sample(nrow(students_svm), nrow(students_svm)*0.8)
+svm_train <- students_svm[index, ]
+svm_test <-  students_svm[-index, ]
+
+# Feature Scaling 
+#svm_train[-3] = scale(svm_train[-3]) 
+#svm_test[-3] = scale(svm_test[-3]) 
+```
+
+```{r}
+model_svm_alc = svm(grade ~ ., data = svm_train, kernel = "linear", type = 'C-classification')
+plot(model_svm_alc, svm_train, col = c("#2596be", "#9925be", "#49be25", "#be4d25", "#1054a4"))
+```
+```{r}
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=3, verboseIter = TRUE)
+model_svm_alc_tuned = svm(grade ~ ., data = svm_train, kernel = "linear", type = 'C-classification', tunecontrol = trainControl)
+plot(model_svm_alc_tuned, svm_train, col = c("#2596be", "#9925be", "#49be25", "#be4d25", "#1054a4"))
+```
+**SVM predictions**
+```{r}
+# Predictions
+predictions <- predict(model_svm_alc, svm_test, type = "response")
+
+#Confusion Matrix
+confusionMatrix <- table(predictions, svm_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+**SVM tuned predictions**
+```{r}
+# Predictions
+predictions <- predict(model_svm_alc_tuned, svm_test, type = "response")
+
+#Confusion Matrix
+confusionMatrix <- table(predictions, svm_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+
+#### Logisitc Regression
+```{r}
+set.seed(15)
+index <- sample(nrow(students_rose), nrow(students_rose)*0.8)
+students_train <- students_rose[index, ]
+students_test <-  students_rose[-index, ]
+
+# 10-fold cross validation with 3 repeats
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=3, verboseIter = TRUE)
+metric <- "Accuracy"
+
+```
+We fit an initial logistic regression model to predict the occurrence of a stroke, to find the most significant variables.
+**Model**
+```{r}
+formula <- grade ~ school + sex + age + address + famsize + Pstatus + Medu + Fedu + traveltime + famrel + studytime + freetime + goout + absences + health + Walc + Dalc
+model_glm <- glm(formula, data = students_train, family = binomial)
+summary(model_glm)
+```
+**Tuned model**
+```{r}
+model_glm_tuned <- train(formula, 
+                        students_train, method = "glmStepAIC", 
+                        metric = "accuracy", 
+                        tuneLength = 10,
+                        trControl = trainControl)
+summary(model_glm_tuned$finalModel) 
+
+```
+
+#### SVM
+**SVM Model**
+```{r}
+model_svm = svm(formula, data = students_train, kernel = "linear")
+summary(model_svm)
+```
+**Tuned SVM Model**
+```{r}
+model_svm_tuned = svm(formula, data = students_train, kernel = "polynomial", gamma = 0.1, C = 1,  type = 'C-classification', tunecontrol = trainControl)# = tune.control(sampling = "cross", cross = 10), cost = 10)
+summary(model_svm_tuned)
+```
+
+#### Random Forest
+**Random Forest Model**
+```{r}
+set.seed(15)
+model_rf <- randomForest(formula, data=students_train) 
+```
+**Tuned Random Forest Model**
+```{r}
+set.seed(15)
+model_rf_tuned <- train(formula, 
+                        students_train, method = "rf", 
+                        metric = "accuracy", 
+                        trControl = trainControl)
+print(model_rf_tuned)
+```
+
+## k-Nearest Neighbour
+**kNN**
+```{r}
+model_knn <- train(formula, students_train, method = "knn", tuneGrid = data.frame(k = c(3)))
+summary(model_knn) 
+```
+**Tuned kNN**
+```{r}
+model_knn_tuned <- train(formula, students_train, method = "knn", metric = "Accuracy", tuneLength = 10,trControl = trainControl)
+summary(model_knn_tuned$finalModel) 
+```
+
+#### Prediction
+**Prediction GLM**
+```{r}
+# Predictions
+predictions_glm <- predict(model_glm, students_test, type = "response")
+predictionsBinary <- ifelse(predictions_glm > 0.5, "good", "bad")
+
+#Confusion Matrix
+confusionMatrix <- table(predictionsBinary, students_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+
+**Prediction GLM tuned**
+```{r}
+# Predictions
+predictions_glm_tuned <- predict(model, students_test, type="prob")$good
+predictionsBinary <- ifelse(predictions_glm_tuned > 0.5, "good", "bad")
+
+#Confusion Matrix
+confusionMatrix <- table(predictionsBinary, students_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+
+**SVM predictions**
+```{r}
+# Predictions
+predictions_svm <- predict(model_svm, students_test, type = "response")
+
+#Confusion Matrix
+confusionMatrix <- table(predictions_svm, students_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+
+**SVM tuned predictions**
+```{r}
+# Predictions
+predictions_svm_tuned <- predict(model_svm_tuned, students_test, type = "response")
+
+#Confusion Matrix
+confusionMatrix <- table(predictions_svm_tuned, students_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+
+**Random Forest**
+```{r}
+# Predictions
+predictions_rf_raw <- predict(model_rf, students_test, type="prob")[, 2]
+predictions_rf <- ifelse(predictions_rf_raw > 0.5, "good", "bad")
+  
+#Confusion Matrix
+confusionMatrix <- table(predictions_rf, students_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+**Tuned Random Forest**
+```{r}
+# Predictions
+predictions_rf_tuned_raw <- predict(model_rf_tuned, students_test, type="prob")$good
+predictions_rf_tuned <- ifelse(predictions_rf_tuned_raw > 0.5, "good", "bad")
+
+#Confusion Matrix
+confusionMatrix <- table(predictionsBinary, students_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+**k-Nearest-Neighboor**
+```{r}
+# Predictions
+predictions_knn_raw <- predict(model_knn, students_test, type="prob")[, 2]
+predictions_knn <- ifelse(predictions_knn_raw > 0.5, "good", "bad")
+
+#Confusion Matrix
+confusionMatrix <- table(predictions_knn, students_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+**Tuned k-Nearest-Neighboor**
+```{r}
+# Predictions
+predictions_knn_tuned_raw <- predict(model_knn_tuned, students_test, type="prob")[, 2]
+predictions_knn_tuned <- ifelse(predictions_knn_tuned_raw > 0.5, "good", "bad")
+
+#Confusion Matrix
+confusionMatrix <- table(predictions_knn_tuned, students_test$grade)
+print(confusionMatrix)
+
+# Accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy", accuracy))
+```
+
+## RESULTS 
+
+**ROC Curve**
+```{r}
+roc_glm <- roc(students_test$grade, predictions_glm)
+roc_glm_tuned <- roc(students_test$grade, predictions_glm_tuned)
+roc_rf <- roc(students_test$grade, predictions_rf_raw)
+roc_rf_tuned <- roc(students_test$grade, predictions_rf_tuned_raw)
+roc_knn <- roc(students_test$grade, predictions_knn_raw)
+roc_knn_tuned <- roc(students_test$grade, predictions_knn_tuned_raw)
+```
+
+```{r}
+plot(roc_glm, main = "ROC Curve for GLM Model", col = "#2596be", lwd = 2)
+lines(roc_glm_tuned,col = "#9925be", lwd = 2)
+lines(roc_knn,col = "#be4d25", lwd = 2)
+lines(roc_knn_tuned,col = "#1054a4", lwd = 2)
+lines(roc_rf,col = "#49be25", lwd = 2)
+lines(roc_rf_tuned,col = "#ff64a4", lwd = 2)
+#c("#2596be", "#9925be", "#49be25", "#be4d25", "#1054a4"))
+# Add diagonal line (random classifier)
+abline(a = 0, b = 1, lty = 2, col = "grey")
+legend("bottomright", legend = c("GLM Model", "GLM Tuned", "kNN", "kNN Tuned", "Random Forest", "Random Forest Tuned", "Random Classifier"), col = c("#2596be", "#9925be", "#be4d25", "#1054a4", "#49be25", "#ff64a4", "grey"), lty = c(1, 1, 1, 1, 1, 1, 2), lwd = 2)
+```
+
+### 3. Clustering
+```{r}
+#substudents = students[c('G_mean', 'school', 'sex', 'age', 'address', 'famsize', 'Pstatus', 'Medu', 'Fedu', 'traveltime', 'famrel', 'studytime', 'freetime', 'goout', 'absences', 'health', 'Walc',  'Dalc')] 
+substudents = students[c('G_mean', 'studytime', 'Dalc')] 
+substudents <- mutate_if(substudents, is.character, as.factor)
+substudents <- mutate_if(substudents, is.factor, as.integer)
+```
+
+**Hopkins score for cluster potential**
+```{r}
+# check data is suitable for clustering or not  with such as hopkins 
+hopkins_statistic <- hopkins::hopkins(substudents)
+cat("Hopkins statistic score for the first dataset: ", hopkins_statistic)
+```
+**K-Means for different values of k**
+```{r}
+# Run K-Means clustering with different values of k
+k_values <- 2:10
+silhouette_scores <- sapply(k_values, function(k) {
+  kmeans_result <- kmeans(substudents, centers = k, nstart = 25)
+  cluster_silhouette <- silhouette(kmeans_result$cluster, dist(df_h1))
+  mean(cluster_silhouette[, 3])
+})
+
+# Plot Silhouette Score vs. Number of Clusters
+plot(k_values, silhouette_scores, type = "b", pch = 19, frame = FALSE,
+     xlab = "Number of Clusters (k)", ylab = "Silhouette Score",
+     main = "Silhouette Score for Different Numbers of Clusters")
+```
+**K-means**
+```{r}
+# Perform k-means clustering (for example, with k = 3)
+k <- 5
+kmeans_result <- kmeans(substudents, centers = k)
+
+# Plot the data points with colors representing the cluster assignments
+plot(substudents, col = kmeans_result$cluster, pch = 16, main = "K-means Clustering")
+# Add cluster centers
+points(kmeans_result$centers, col = 1:k, pch = 3, cex = 2)
+# Add legend
+legend("topright", legend = paste("Cluster", 1:k), col = 1:k, pch = 16, cex = 1.2, title = "Cluster")
+
+library(plot3D)
+scatter3D(substudents$Dalc, substudents$studytime, substudents$G_mean, colvar = kmeans_result$cluster, pch = 16, cex = 2, col = c("#2596be", "#9925be", "#49be25", "#be4d25", "#1054a4"), theta = 30, phi = 20, ticktype = "detailed", main = "K-means Clustering", xlab="Alcohol", ylab="Studytime", zlab="grades")
+```
